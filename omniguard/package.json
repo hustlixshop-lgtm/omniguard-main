@@ -1,0 +1,44 @@
+{
+  "name": "omniguard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI-Native Enterprise DevSecOps Platform",
+  "license": "SEE LICENSE FILE",
+  "bin": {
+    "omniguard": "./cli/omniguard.cjs"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "deploy:local": "bash scripts/deploy-linux.sh",
+    "deploy:aws": "bash scripts/deploy-aws-ecs.sh",
+    "deploy:gcp": "bash scripts/deploy-gcp-cloud-run.sh",
+    "deploy:azure": "bash scripts/deploy-azure-container-apps.sh",
+    "deploy:k8s": "kubectl apply -f scripts/k8s.yaml",
+    "agent:install": "bash agent/install-agent.sh",
+    "agent:install:win": "powershell -File agent/install-service.ps1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

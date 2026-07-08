@@ -1,0 +1,38 @@
+[Unit]
+Description=OmniGuard Local Security Agent
+Documentation=https://docs.omniguard.io/agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/omniguard/agent.env
+ExecStart=/usr/bin/node /opt/omniguard/agent/omniguard-agent.js --foreground
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=512M
+CPUQuota=50%
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/run /var/log
+ReadOnlyPaths=/etc
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=omniguard-agent
+
+[Install]
+WantedBy=multi-user.target

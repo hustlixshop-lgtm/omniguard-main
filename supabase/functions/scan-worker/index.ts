@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.0";
-import { callAI, resolveAIConfig, extractJson, estimateCost, type AIConfig } from "../_shared/ai.ts";
+import { callAI, resolveAIConfigFromOrg, extractJson, estimateCost, type AIConfig } from "../_shared/ai.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -608,7 +608,7 @@ async function processScan(scanId: string, repoId: string, orgId: string): Promi
     }
 
     // ── Resolve AI config ─────────────────────────────────────
-    const aiCfg = resolveAIConfig((org?.ai_config as Record<string, unknown>) ?? {});
+    const aiCfg = await resolveAIConfigFromOrg(orgId);
     console.log(`[scan-worker] ${scanId}: org=${orgId} repo=${repo.full_name} AI=${aiCfg.provider}`);
 
     // ── Fetch files ───────────────────────────────────────────

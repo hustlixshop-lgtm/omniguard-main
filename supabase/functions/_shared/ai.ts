@@ -3,7 +3,7 @@
  *
  * Features:
  * - 7 providers: Anthropic, OpenAI, AWS Bedrock, Azure OpenAI, Google Gemini, OpenRouter, Ollama
- * - BYOK: org-level encrypted keys, platform never pays
+ * - BYOK: org-level encrypted keys stored in Supabase Vault, platform never pays
  * - 3-tier model routing: fast (triage) → medium (analysis) → deep (summary)
  * - Exponential backoff retry with jitter (3 attempts)
  * - SHA-256 prompt caching (7-day TTL) via ai_cache table
@@ -32,11 +32,9 @@ export interface AIConfig {
   ollama_url?:            string;
   ollama_model_fast?:     string;
   ollama_model_med?:      string;
-  // Fallback provider if primary fails
   fallback_provider?:     string;
-  // Cost/latency controls
-  max_tokens_per_scan?:   number;  // hard cap total tokens per scan, default 50000
-  disable_deep_tier?:     boolean; // skip layer 3 summary (saves cost)
+  max_tokens_per_scan?:   number;
+  disable_deep_tier?:     boolean;
 }
 
 export interface AIResponse {
@@ -56,24 +54,23 @@ export type Tier = "fast" | "medium" | "deep";
 // ── Model registry ────────────────────────────────────────────
 
 export const MODELS: Record<string, Record<Tier, string>> = {
-  anthropic:  { fast: "claude-3-5-haiku-20241022",           medium: "claude-3-5-sonnet-20241022",          deep: "claude-3-5-sonnet-20241022"                },
-  openai:     { fast: "gpt-4o-mini",                         medium: "gpt-4o",                              deep: "gpt-4o"                                    },
-  bedrock:    { fast: "anthropic.claude-3-5-haiku-20241022-v1:0", medium: "anthropic.claude-3-5-sonnet-20241022-v2:0", deep: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
-  azure:      { fast: "gpt-4o-mini",                         medium: "gpt-4o",                              deep: "gpt-4o"                                    },
-  gemini:     { fast: "gemini-1.5-flash",                    medium: "gemini-1.5-pro",                      deep: "gemini-1.5-pro"                            },
-  openrouter: { fast: "anthropic/claude-3.5-haiku",          medium: "anthropic/claude-3.5-sonnet",         deep: "anthropic/claude-3-opus"                   },
-  ollama:     { fast: "llama3.2",                            medium: "llama3.2",                            deep: "llama3.2"                                  },
+  anthropic:  { fast: "claude-3-5-haiku-20241022",                        medium: "claude-3-5-sonnet-20241022",                       deep: "claude-3-5-sonnet-20241022"                             },
+  openai:     { fast: "gpt-4o-mini",                                      medium: "gpt-4o",                                           deep: "gpt-4o"                                                 },
+  bedrock:    { fast: "anthropic.claude-3-5-haiku-20241022-v1:0",         medium: "anthropic.claude-3-5-sonnet-20241022-v2:0",        deep: "anthropic.claude-3-5-sonnet-20241022-v2:0"              },
+  azure:      { fast: "gpt-4o-mini",                                      medium: "gpt-4o",                                           deep: "gpt-4o"                                                 },
+  gemini:     { fast: "gemini-1.5-flash",                                 medium: "gemini-1.5-pro",                                   deep: "gemini-1.5-pro"                                         },
+  openrouter: { fast: "anthropic/claude-3.5-haiku",                       medium: "anthropic/claude-3.5-sonnet",                      deep: "anthropic/claude-3-opus"                                },
+  ollama:     { fast: "llama3.2",                                         medium: "llama3.2",                                         deep: "llama3.2"                                               },
 };
 
-// Approximate cost per 1M tokens (input/output average), USD
 const COST_PER_1M: Record<string, Record<Tier, number>> = {
-  anthropic:  { fast: 1.0,  medium: 9.0,   deep: 45.0  },
-  openai:     { fast: 0.3,  medium: 7.5,   deep: 7.5   },
-  bedrock:    { fast: 1.0,  medium: 9.0,   deep: 9.0   },
-  azure:      { fast: 0.3,  medium: 7.5,   deep: 7.5   },
-  gemini:     { fast: 0.075,medium: 1.25,  deep: 1.25  },
-  openrouter: { fast: 1.0,  medium: 9.0,   deep: 9.0   },
-  ollama:     { fast: 0.0,  medium: 0.0,   deep: 0.0   },
+  anthropic:  { fast: 1.0,   medium: 9.0,  deep: 45.0 },
+  openai:     { fast: 0.3,   medium: 7.5,  deep: 7.5  },
+  bedrock:    { fast: 1.0,   medium: 9.0,  deep: 9.0  },
+  azure:      { fast: 0.3,   medium: 7.5,  deep: 7.5  },
+  gemini:     { fast: 0.075, medium: 1.25, deep: 1.25 },
+  openrouter: { fast: 1.0,   medium: 9.0,  deep: 9.0  },
+  ollama:     { fast: 0.0,   medium: 0.0,  deep: 0.0  },
 };
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -86,25 +83,22 @@ export function extractJson<T>(text: string): T | null {
   } catch { return null; }
 }
 
-/** SHA-256 a string, returns hex */
 async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Truncate prompt to fit context window, preserving the end */
 function truncatePrompt(prompt: string, maxChars = 30000): string {
   if (prompt.length <= maxChars) return prompt;
   const half = Math.floor(maxChars / 2);
   return prompt.slice(0, half) + "\n\n[...truncated...]\n\n" + prompt.slice(-half);
 }
 
-/** Exponential backoff delay with jitter */
 function backoffDelay(attempt: number): number {
   return Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 10000);
 }
 
-// ── Supabase client for caching / metering ────────────────────
+// ── Supabase client (service role — for cache, metering, vault) ───────────
 
 let _supa: ReturnType<typeof createClient> | null = null;
 function getSupa() {
@@ -115,6 +109,47 @@ function getSupa() {
   }
   return _supa;
 }
+
+// ── Vault helpers ─────────────────────────────────────────────
+
+/** Read AI keys from Supabase Vault for an org (service-role only) */
+async function readVaultKeys(orgId: string): Promise<Record<string, string> | null> {
+  const supa = getSupa();
+  if (!supa) return null;
+  try {
+    const { data: org } = await supa
+      .from("organizations")
+      .select("ai_config, ai_keys_vault_id")
+      .eq("id", orgId)
+      .maybeSingle();
+    if (!org) return null;
+
+    const cfg = org.ai_config as Record<string, unknown> | null;
+
+    if (org.ai_keys_vault_id && cfg?._vault === true) {
+      const { data: secret } = await supa.rpc("vault_read_secret", { secret_id: org.ai_keys_vault_id });
+      if (secret) {
+        try { return JSON.parse(secret as string); } catch { return null; }
+      }
+    }
+    // Fallback: base64-encoded in ai_config
+    if (cfg?._keys_encoded) {
+      try { return JSON.parse(atob(cfg._keys_encoded as string)); } catch { return null; }
+    }
+    // Legacy: keys stored directly in ai_config (migration path)
+    if (cfg && typeof cfg === "object") {
+      const legacy: Record<string, string> = {};
+      const keyFields = ["anthropic_api_key","openai_api_key","aws_access_key_id","aws_secret_access_key","azure_openai_key","gemini_api_key","openrouter_api_key"];
+      for (const f of keyFields) {
+        if (typeof cfg[f] === "string") legacy[f] = cfg[f] as string;
+      }
+      return Object.keys(legacy).length > 0 ? legacy : null;
+    }
+    return null;
+  } catch { return null; }
+}
+
+// ── Cache helpers ─────────────────────────────────────────────
 
 async function cacheGet(cacheKey: string): Promise<string | null> {
   const supa = getSupa(); if (!supa) return null;
@@ -160,7 +195,7 @@ async function callOpenAI(key: string, model: string, prompt: string, maxTokens:
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "system", content: "You are an expert security engineer." }, { role: "user", content: prompt }] }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
     signal: AbortSignal.timeout(45_000),
   });
   if (!r.ok) { const e = await r.text(); throw new Error(`OpenAI ${r.status}: ${e.slice(0, 200)}`); }
@@ -168,71 +203,38 @@ async function callOpenAI(key: string, model: string, prompt: string, maxTokens:
   return { text: d.choices?.[0]?.message?.content ?? "", promptTokens: d.usage?.prompt_tokens ?? 0, completionTokens: d.usage?.completion_tokens ?? 0 };
 }
 
-async function callGemini(key: string, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens } }),
-    signal: AbortSignal.timeout(45_000),
-  });
-  if (!r.ok) { const e = await r.text(); throw new Error(`Gemini ${r.status}: ${e.slice(0, 200)}`); }
-  const d = await r.json();
-  return { text: d.candidates?.[0]?.content?.parts?.[0]?.text ?? "", promptTokens: d.usageMetadata?.promptTokenCount ?? 0, completionTokens: d.usageMetadata?.candidatesTokenCount ?? 0 };
-}
-
-async function callOpenRouter(key: string, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}`, "HTTP-Referer": "https://omniguard.io", "X-Title": "OmniGuard" },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
-    signal: AbortSignal.timeout(45_000),
-  });
-  if (!r.ok) { const e = await r.text(); throw new Error(`OpenRouter ${r.status}: ${e.slice(0, 200)}`); }
-  const d = await r.json();
-  return { text: d.choices?.[0]?.message?.content ?? "", promptTokens: d.usage?.prompt_tokens ?? 0, completionTokens: d.usage?.completion_tokens ?? 0 };
-}
-
-async function callOllama(baseUrl: string, model: string, prompt: string): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
-  const r = await fetch(`${baseUrl}/api/generate`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt, stream: false }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!r.ok) { const e = await r.text(); throw new Error(`Ollama ${r.status}: ${e.slice(0, 200)}`); }
-  const d = await r.json();
-  return { text: d.response ?? "", promptTokens: d.prompt_eval_count ?? 0, completionTokens: d.eval_count ?? 0 };
-}
-
-async function callBedrock(cfg: AIConfig, modelId: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+async function callBedrock(cfg: AIConfig, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
   const region = cfg.aws_region ?? "us-east-1";
-  const endpoint = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(modelId)}/invoke`;
   const body = JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] });
-  const enc = new TextEncoder();
-  const now = new Date();
-  const dateStr = now.toISOString().replace(/[:-]/g, "").replace(/\.\d{3}Z$/, "Z");
-  const shortDate = dateStr.slice(0, 8);
-  const payloadHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(body)))).map(b => b.toString(16).padStart(2, "0")).join("");
-  const host = `bedrock-runtime.${region}.amazonaws.com`;
-  const canonHeaders = `content-type:application/json\nhost:${host}\nx-amz-date:${dateStr}\n`;
-  const signedHeaders = "content-type;host;x-amz-date";
-  const canonReq = ["POST", `/model/${encodeURIComponent(modelId)}/invoke`, "", canonHeaders, signedHeaders, payloadHash].join("\n");
-  const crHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(canonReq)))).map(b => b.toString(16).padStart(2, "0")).join("");
-  const credScope = `${shortDate}/${region}/bedrock/aws4_request`;
-  const sts = ["AWS4-HMAC-SHA256", dateStr, credScope, crHash].join("\n");
-  const hmac = async (k: ArrayBuffer, m: string) => { const key = await crypto.subtle.importKey("raw", k, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return crypto.subtle.sign("HMAC", key, enc.encode(m)); };
-  const kDate = await hmac(enc.encode(`AWS4${cfg.aws_secret_access_key}`), shortDate);
-  const kRegion = await hmac(kDate, region); const kSvc = await hmac(kRegion, "bedrock"); const kSign = await hmac(kSvc, "aws4_request");
-  const sig = Array.from(new Uint8Array(await hmac(kSign, sts))).map(b => b.toString(16).padStart(2, "0")).join("");
-  const auth = `AWS4-HMAC-SHA256 Credential=${cfg.aws_access_key_id}/${credScope}, SignedHeaders=${signedHeaders}, Signature=${sig}`;
-  const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-amz-date": dateStr, "Authorization": auth }, body, signal: AbortSignal.timeout(45_000) });
+  const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`;
+  const date = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+  const dateShort = date.slice(0, 8);
+  const bodyHash = await sha256(body);
+  const canonicalReq = `POST\n/model/${model}/invoke\n\ncontent-type:application/json\nhost:bedrock-runtime.${region}.amazonaws.com\nx-amz-content-sha256:${bodyHash}\nx-amz-date:${date}\n\ncontent-type;host;x-amz-content-sha256;x-amz-date\n${bodyHash}`;
+  const strToSign = `AWS4-HMAC-SHA256\n${date}\n${dateShort}/${region}/bedrock/aws4_request\n${await sha256(canonicalReq)}`;
+  async function hmac(key: ArrayBuffer | Uint8Array, msg: string) {
+    const k = await crypto.subtle.importKey("raw", key instanceof Uint8Array ? key : new Uint8Array(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return crypto.subtle.sign("HMAC", k, new TextEncoder().encode(msg));
+  }
+  const kDate    = await hmac(new TextEncoder().encode("AWS4" + cfg.aws_secret_access_key!), dateShort);
+  const kRegion  = await hmac(kDate, region);
+  const kService = await hmac(kRegion, "bedrock");
+  const kSigning = await hmac(kService, "aws4_request");
+  const sig = Array.from(new Uint8Array(await hmac(kSigning, strToSign))).map(b => b.toString(16).padStart(2,"0")).join("");
+  const auth = `AWS4-HMAC-SHA256 Credential=${cfg.aws_access_key_id!}/${dateShort}/${region}/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=${sig}`;
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": auth, "x-amz-date": date, "x-amz-content-sha256": bodyHash }, body, signal: AbortSignal.timeout(45_000) });
   if (!r.ok) { const e = await r.text(); throw new Error(`Bedrock ${r.status}: ${e.slice(0, 200)}`); }
   const d = await r.json();
   return { text: d.content?.[0]?.text ?? "", promptTokens: d.usage?.input_tokens ?? 0, completionTokens: d.usage?.output_tokens ?? 0 };
 }
 
-async function callAzure(cfg: AIConfig, deployment: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
-  const url = `${cfg.azure_openai_endpoint}/openai/deployments/${deployment}/chat/completions?api-version=2024-05-01-preview`;
+async function callAzure(cfg: AIConfig, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+  const endpoint = cfg.azure_openai_endpoint!.replace(/\/$/, "");
+  const deployment = model;
+  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=2024-02-15-preview`;
   const r = await fetch(url, {
-    method: "POST", headers: { "Content-Type": "application/json", "api-key": cfg.azure_openai_key! },
+    method: "POST",
+    headers: { "Content-Type": "application/json", "api-key": cfg.azure_openai_key! },
     body: JSON.stringify({ max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
     signal: AbortSignal.timeout(45_000),
   });
@@ -241,14 +243,54 @@ async function callAzure(cfg: AIConfig, deployment: string, prompt: string, maxT
   return { text: d.choices?.[0]?.message?.content ?? "", promptTokens: d.usage?.prompt_tokens ?? 0, completionTokens: d.usage?.completion_tokens ?? 0 };
 }
 
+async function callGemini(key: string, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens } }),
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error(`Gemini ${r.status}: ${e.slice(0, 200)}`); }
+  const d = await r.json();
+  const text = d.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const pt = d.usageMetadata?.promptTokenCount ?? 0;
+  const ct = d.usageMetadata?.candidatesTokenCount ?? 0;
+  return { text, promptTokens: pt, completionTokens: ct };
+}
+
+async function callOpenRouter(key: string, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}`, "HTTP-Referer": "https://omniguard.app", "X-Title": "OmniGuard" },
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error(`OpenRouter ${r.status}: ${e.slice(0, 200)}`); }
+  const d = await r.json();
+  return { text: d.choices?.[0]?.message?.content ?? "", promptTokens: d.usage?.prompt_tokens ?? 0, completionTokens: d.usage?.completion_tokens ?? 0 };
+}
+
+async function callOllama(base: string, model: string, prompt: string): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+  const r = await fetch(`${base}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, prompt, stream: false }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error(`Ollama ${r.status}: ${e.slice(0, 200)}`); }
+  const d = await r.json();
+  return { text: d.response ?? "", promptTokens: d.prompt_eval_count ?? 0, completionTokens: d.eval_count ?? 0 };
+}
+
 // ── Core dispatch with retry + cache ─────────────────────────
 
 interface CallOptions {
-  maxTokens?:     number;
-  orgId?:         string;
-  scanId?:        string;
-  skipCache?:     boolean;
-  cacheTtlDays?:  number;
+  maxTokens?:    number;
+  orgId?:        string;
+  scanId?:       string;
+  skipCache?:    boolean;
+  cacheTtlDays?: number;
 }
 
 async function dispatchWithRetry(
@@ -271,19 +313,14 @@ async function dispatchWithRetry(
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
       const msg = lastErr.message;
-      // Don't retry auth errors
       if (msg.includes("401") || msg.includes("403") || msg.includes("invalid_api_key")) throw lastErr;
-      // Don't retry context-length errors
       if (msg.includes("context_length") || msg.includes("maximum context")) throw lastErr;
       console.warn(`[ai] attempt ${attempt + 1} failed for ${cfg.provider}/${model}: ${msg}`);
     }
   }
-  throw lastErr ?? new Error("AI call failed after 3 attempts");
+  throw lastErr ?? new Error("All retries exhausted");
 }
 
-/**
- * Main entry point — call AI with full caching, retry, metering
- */
 export async function callAI(
   cfg: AIConfig,
   prompt: string,
@@ -293,34 +330,26 @@ export async function callAI(
   if (cfg.provider === "none") return null;
 
   const model = (() => {
-    if (cfg.provider === "azure") {
-      return tier === "fast" ? (cfg.azure_deployment_fast ?? "gpt-4o-mini")
-           : tier === "deep" ? (cfg.azure_deployment_med  ?? "gpt-4o")
-           : (cfg.azure_deployment_med ?? "gpt-4o");
-    }
-    if (cfg.provider === "ollama") {
-      return tier === "fast" ? (cfg.ollama_model_fast ?? "llama3.2") : (cfg.ollama_model_med ?? "llama3.2");
-    }
+    if (tier === "deep" && cfg.disable_deep_tier) tier = "medium";
     return MODELS[cfg.provider]?.[tier];
   })();
   if (!model) return null;
 
-  const maxTokens = opts.maxTokens ?? (tier === "fast" ? 400 : tier === "deep" ? 600 : 800);
-  const truncated = truncatePrompt(prompt, tier === "fast" ? 12000 : tier === "deep" ? 20000 : 16000);
+  const maxTokens = opts.maxTokens ?? 2048;
+  const truncated = truncatePrompt(prompt);
 
-  // Cache key = hash(provider + model + truncated prompt)
-  const cacheKey = await sha256(`${cfg.provider}:${model}:${truncated}`);
-  const t0 = Date.now();
-
+  // Cache lookup
   if (!opts.skipCache) {
+    const cacheKey = await sha256(`${cfg.provider}:${model}:${prompt}`);
     const cached = await cacheGet(cacheKey);
     if (cached) {
-      const latency = Date.now() - t0;
-      await recordUsage(opts.orgId ?? null, opts.scanId ?? null, cfg.provider, model, tier, 0, 0, true, latency);
-      return { text: cached, model, provider: cfg.provider, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, latency_ms: latency, cache_hit: true, tier };
+      await recordUsage(opts.orgId ?? null, opts.scanId ?? null, cfg.provider, model, tier, 0, 0, true, 0);
+      return { text: cached, model, provider: cfg.provider, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, latency_ms: 0, cache_hit: true, tier };
     }
   }
 
+  const cacheKey = await sha256(`${cfg.provider}:${model}:${prompt}`);
+  const t0 = Date.now();
   let result: { text: string; promptTokens: number; completionTokens: number } | null = null;
   let usedProvider = cfg.provider;
   let usedModel = model;
@@ -328,7 +357,6 @@ export async function callAI(
   try {
     result = await dispatchWithRetry(cfg, model, truncated, maxTokens);
   } catch (primaryErr) {
-    // Try fallback provider if configured
     if (cfg.fallback_provider && cfg.fallback_provider !== cfg.provider) {
       const fbCfg = { ...cfg, provider: cfg.fallback_provider as AIConfig["provider"] };
       const fbModel = MODELS[cfg.fallback_provider]?.[tier];
@@ -350,10 +378,7 @@ export async function callAI(
   const latency = Date.now() - t0;
   const total = result.promptTokens + result.completionTokens;
 
-  // Store in cache
   await cachePut(cacheKey, opts.orgId ?? null, usedProvider, usedModel, cacheKey, result.text, total);
-
-  // Record usage
   await recordUsage(opts.orgId ?? null, opts.scanId ?? null, usedProvider, usedModel, tier, result.promptTokens, result.completionTokens, false, latency);
 
   console.log(`[ai] ${usedProvider}/${usedModel} tier=${tier} tokens=${total} latency=${latency}ms`);
@@ -409,10 +434,43 @@ export function getEnvAIConfig(): AIConfig {
 export function resolveAIConfig(orgConfig: Record<string, unknown>): AIConfig {
   const envCfg = getEnvAIConfig();
   const orgCfg = getAIConfig(orgConfig);
-  // If org has a provider key configured, use it entirely
   if (orgCfg.provider !== "none") return { ...orgCfg, fallback_provider: orgCfg.fallback_provider ?? (envCfg.provider !== "none" ? envCfg.provider : undefined) };
-  // Fall back to platform env
   return envCfg;
+}
+
+/**
+ * Vault-aware config resolution — reads actual API keys from Supabase Vault.
+ * Use this in edge functions instead of resolveAIConfig when the org uses vault storage.
+ * Requires SUPABASE_SERVICE_ROLE_KEY to be set (automatically available in edge functions).
+ */
+export async function resolveAIConfigFromOrg(orgId: string): Promise<AIConfig> {
+  const supa = getSupa();
+  if (!supa) return getEnvAIConfig();
+
+  try {
+    const { data: org } = await supa
+      .from("organizations")
+      .select("ai_config")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    if (!org) return getEnvAIConfig();
+
+    const cfg = (org.ai_config as Record<string, unknown>) || {};
+
+    // Non-secret config from ai_config column
+    const base = getAIConfig(cfg);
+
+    // Merge in vault keys (override any legacy plaintext)
+    const vaultKeys = await readVaultKeys(orgId);
+    if (vaultKeys) {
+      return { ...base, ...vaultKeys };
+    }
+
+    return resolveAIConfig(cfg);
+  } catch {
+    return getEnvAIConfig();
+  }
 }
 
 /** Estimated cost in USD for a token count */

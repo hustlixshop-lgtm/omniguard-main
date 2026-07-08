@@ -401,26 +401,86 @@ Only respond with the JSON object.`
   }
 }
 
-// OpenAI Provider stub for future implementation
+// OpenAI Provider — real implementation
 export class OpenAIProvider implements AIProvider {
-  name(): string {
-    return 'OpenAI';
+  private apiKey: string | null = null;
+  private model = 'gpt-4o-mini';
+
+  constructor() {
+    this.apiKey = process.env.OPENAI_API_KEY || null;
   }
 
-  async classify(): Promise<AIAnalysisResult> {
-    return { confidence: 0, reasoning: 'OpenAI provider not implemented yet' };
+  name(): string { return 'OpenAI'; }
+
+  setApiKey(key: string): void { this.apiKey = key; }
+
+  setModel(model: string): void { this.model = model; }
+
+  private async call(prompt: string, maxTokens = 2048): Promise<string> {
+    if (!this.apiKey) throw new Error('OpenAI API key not configured');
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: this.model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!res.ok) throw new Error(`OpenAI ${res.status}`);
+    const d = await res.json() as { choices: Array<{ message: { content: string } }> };
+    return d.choices?.[0]?.message?.content ?? '';
   }
 
-  async explain(): Promise<AIAnalysisResult> {
-    return { confidence: 0, reasoning: 'OpenAI provider not implemented yet' };
+  async classify(request: AIAnalysisRequest): Promise<AIAnalysisResult> {
+    if (!this.apiKey) return { confidence: 0, reasoning: 'OpenAI API key not configured' };
+    try {
+      const text = await this.call(`Classify the security risk of this code as SAFE/LOW/MEDIUM/HIGH/CRITICAL. Return JSON: {"classification":"HIGH","confidence":0.9,"reasoning":"...","concerns":[]}\n\n${this.formatCtx(request)}`, 512);
+      const json = this.parse(text);
+      return { classification: json.classification as string || 'LOW', confidence: (json.confidence as number) || 0.5, reasoning: json.reasoning as string || '', references: (json.concerns as string[]) || [] };
+    } catch (e) { return { confidence: 0, reasoning: String(e) }; }
   }
 
-  async remediate(): Promise<AIAnalysisResult> {
-    return { confidence: 0, reasoning: 'OpenAI provider not implemented yet' };
+  async explain(request: AIAnalysisRequest): Promise<AIAnalysisResult> {
+    if (!this.apiKey) return { confidence: 0, reasoning: 'OpenAI API key not configured' };
+    try {
+      const findings = request.findings.slice(0, 5).map(f => `[${f.severity}] ${f.title}: ${f.description}`).join('\n');
+      const text = await this.call(`Explain these security findings. Return JSON: {"explanation":"...","confidence":0.8}\n\n${findings}`, 1024);
+      const json = this.parse(text);
+      return { confidence: (json.confidence as number) || 0.8, reasoning: '', explanation: json.explanation as string || '' };
+    } catch (e) { return { confidence: 0, reasoning: String(e) }; }
   }
 
-  async summarize(): Promise<AIAnalysisResult> {
-    return { confidence: 0, reasoning: 'OpenAI provider not implemented yet' };
+  async remediate(request: AIAnalysisRequest): Promise<AIAnalysisResult> {
+    if (!this.apiKey) return { confidence: 0, reasoning: 'OpenAI API key not configured' };
+    const f = request.findings[0];
+    if (!f) return { confidence: 0, reasoning: 'No findings' };
+    try {
+      const text = await this.call(`Fix this vulnerability: ${f.title} at ${f.file_path}:${f.line_start}\nEvidence: ${f.evidence}\nReturn JSON: {"remediation":"fixed code","explanation":"why","confidence":0.85}`, 2048);
+      const json = this.parse(text);
+      return { confidence: (json.confidence as number) || 0.85, reasoning: json.explanation as string || '', remediation: json.remediation as string || '' };
+    } catch (e) { return { confidence: 0, reasoning: String(e) }; }
+  }
+
+  async summarize(request: AIAnalysisRequest): Promise<AIAnalysisResult> {
+    if (!this.apiKey) return { confidence: 0, reasoning: 'OpenAI API key not configured' };
+    try {
+      const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+      for (const f of request.findings) if (f.severity in counts) counts[f.severity as keyof typeof counts]++;
+      const text = await this.call(`Summarize security posture: ${JSON.stringify(counts)} findings. Return JSON: {"executive_summary":"...","risk_assessment":"HIGH","key_vulnerabilities":[],"confidence":0.9}`, 1024);
+      const json = this.parse(text);
+      return { confidence: (json.confidence as number) || 0.9, reasoning: json.executive_summary as string || '' };
+    } catch (e) { return { confidence: 0, reasoning: String(e) }; }
+  }
+
+  private formatCtx(r: AIAnalysisRequest): string {
+    const parts: string[] = [];
+    if (r.file) parts.push(`File: ${r.file.relativePath}\n${r.file.content.slice(0, 5000)}`);
+    if (r.findings.length) parts.push(`Findings: ${r.findings.slice(0,5).map(f => f.title).join(', ')}`);
+    return parts.join('\n');
+  }
+
+  private parse(text: string): Record<string, unknown> {
+    try { return JSON.parse(text); } catch {
+      const m = text.match(/\{[\s\S]*\}/);
+      try { return m ? JSON.parse(m[0]) : {}; } catch { return {}; }
+    }
   }
 }
 

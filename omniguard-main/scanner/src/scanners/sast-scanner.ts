@@ -471,7 +471,7 @@ export class SASTScanner extends BaseScanner {
     return Math.max(0, Math.min(1, likelihood));
   }
 
-  private filterByLanguage(files: import('../types.js').ScannedFile[], _scanners: string[]): import('../types.js').ScannedFile[] {
+  private filterByLanguage(files: import('../types.js').ScannedFile[], _scanners: import('../types.js').ScannerType[] | string[]): import('../types.js').ScannedFile[] {
     return files.filter(f => {
       const lang = this.detectLanguage(f.relativePath);
       return this.supportedLanguages().includes(lang);

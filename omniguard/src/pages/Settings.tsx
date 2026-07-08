@@ -124,6 +124,7 @@ export function Settings() {
   // AI
   const [aiProvider, setAiProvider] = useState('none')
   const [aiKeys, setAiKeys] = useState({ anthropic: '', openai: '', bedrock_key: '', bedrock_secret: '', bedrock_region: 'us-east-1', azure_endpoint: '', azure_key: '', gemini_key: '', openrouter: '', ollama_url: 'http://localhost:11434', fallback_provider: '', disable_deep: false, max_tokens: '50000' })
+  const [aiKeysConfigured, setAiKeysConfigured] = useState<Record<string, boolean>>({})
   const [aiSaving, setAiSaving] = useState(false); const [aiSaved, setAiSaved] = useState(false)
 
   // Notifs
@@ -140,12 +141,22 @@ export function Settings() {
       supabase.from('api_keys').select('*').eq('organization_id', currentOrganizationId).order('created_at', { ascending: false }),
       supabase.from('integrations').select('*').eq('organization_id', currentOrganizationId),
       supabase.from('organizations').select('settings, ai_config, rate_limits').eq('id', currentOrganizationId).single(),
-    ]).then(([{ data: keys }, { data: ints }, { data: org }]) => {
+    ]).then(async ([{ data: keys }, { data: ints }, { data: org }]) => {
       setApiKeys((keys as ApiKey[]) || [])
       setIntegrations((ints as Integration[]) || [])
-      const ai = (org?.ai_config as Record<string, unknown>) || {}
-      setAiProvider((ai.provider as string) || 'none')
-      setAiKeys(prev => ({ ...prev, fallback_provider: (ai.fallback_provider as string) || '', disable_deep: ai.disable_deep_tier === true, max_tokens: String(ai.max_tokens_per_scan || 50000) }))
+      // Load AI config from secrets-proxy (never returns raw keys, only which are set)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        try {
+          const r = await fetch(`${API}/secrets-proxy/ai-config`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+          if (r.ok) {
+            const aiData = await r.json()
+            setAiProvider(aiData.provider || 'none')
+            setAiKeys(prev => ({ ...prev, fallback_provider: aiData.fallback_provider || '', disable_deep: aiData.disable_deep_tier === true, max_tokens: String(aiData.max_tokens_per_scan || 50000), ollama_url: aiData.ollama_url || 'http://localhost:11434', azure_endpoint: aiData.azure_openai_endpoint || '', bedrock_region: aiData.aws_region || 'us-east-1' }))
+            setAiKeysConfigured(aiData.keys_configured || {})
+          }
+        } catch { /* use defaults */ }
+      }
       const notifSettings = ((org?.settings as Record<string, unknown>)?.notifications as Record<string, unknown>) || {}
       setNotif(prev => ({ ...prev, slack_webhook: (notifSettings.slack_webhook as string) || '', notify_critical: notifSettings.notify_critical !== false, notify_high: notifSettings.notify_high === true, weekly_digest: notifSettings.weekly_digest !== false }))
       const rl = (org?.rate_limits as Record<string, number>) || {}
@@ -195,16 +206,37 @@ export function Settings() {
   const saveAI = async () => {
     if (!currentOrganizationId) return
     setAiSaving(true)
-    const config: Record<string, unknown> = { provider: aiProvider, fallback_provider: aiKeys.fallback_provider || null, disable_deep_tier: aiKeys.disable_deep, max_tokens_per_scan: parseInt(aiKeys.max_tokens) || 50000 }
-    if (aiKeys.anthropic) config.anthropic_api_key = aiKeys.anthropic
-    if (aiKeys.openai) config.openai_api_key = aiKeys.openai
-    if (aiKeys.bedrock_key) { config.aws_access_key_id = aiKeys.bedrock_key; config.aws_secret_access_key = aiKeys.bedrock_secret; config.aws_region = aiKeys.bedrock_region }
-    if (aiKeys.azure_endpoint) { config.azure_openai_endpoint = aiKeys.azure_endpoint; config.azure_openai_key = aiKeys.azure_key }
-    if (aiKeys.gemini_key) config.gemini_api_key = aiKeys.gemini_key
-    if (aiKeys.openrouter) config.openrouter_api_key = aiKeys.openrouter
-    if (aiKeys.ollama_url) config.ollama_url = aiKeys.ollama_url
-    await supabase.from('organizations').update({ ai_config: config }).eq('id', currentOrganizationId)
-    setAiSaving(false); setAiSaved(true); setTimeout(() => setAiSaved(false), 2000)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) { setAiSaving(false); return }
+    // Build payload: non-secret settings + any newly entered keys
+    const payload: Record<string, unknown> = {
+      provider: aiProvider,
+      fallback_provider: aiKeys.fallback_provider || null,
+      disable_deep_tier: aiKeys.disable_deep,
+      max_tokens_per_scan: parseInt(aiKeys.max_tokens) || 50000,
+    }
+    // Only include key fields if the user has entered something new
+    if (aiKeys.anthropic)    payload.anthropic_api_key = aiKeys.anthropic
+    if (aiKeys.openai)       payload.openai_api_key = aiKeys.openai
+    if (aiKeys.bedrock_key)  { payload.aws_access_key_id = aiKeys.bedrock_key; payload.aws_secret_access_key = aiKeys.bedrock_secret; payload.aws_region = aiKeys.bedrock_region }
+    if (aiKeys.azure_key)    { payload.azure_openai_endpoint = aiKeys.azure_endpoint; payload.azure_openai_key = aiKeys.azure_key }
+    if (aiKeys.gemini_key)   payload.gemini_api_key = aiKeys.gemini_key
+    if (aiKeys.openrouter)   payload.openrouter_api_key = aiKeys.openrouter
+    if (aiKeys.ollama_url)   payload.ollama_url = aiKeys.ollama_url
+    try {
+      const res = await fetch(`${API}/secrets-proxy/ai-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setAiSaving(false); setAiSaved(true); setTimeout(() => setAiSaved(false), 2000)
+      // Refresh configured keys display
+      const r2 = await fetch(`${API}/secrets-proxy/ai-config`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+      if (r2.ok) { const d = await r2.json(); setAiKeysConfigured(d.keys_configured || {}) }
+      // Clear entered keys from UI (they're now stored in vault)
+      setAiKeys(prev => ({ ...prev, anthropic: '', openai: '', bedrock_key: '', bedrock_secret: '', azure_key: '', gemini_key: '', openrouter: '' }))
+    } catch (e) { console.error('saveAI failed:', e); setAiSaving(false) }
   }
 
   const saveNotifs = async () => {
@@ -329,7 +361,7 @@ export function Settings() {
                 </select>
               </div>
             </div>
-            {aiProvider === 'anthropic' && <div><label className="label">Anthropic API Key</label><input className="input max-w-lg" type="password" placeholder="sk-ant-api03-..." value={aiKeys.anthropic} onChange={e => setAiKeys({ ...aiKeys, anthropic: e.target.value })} /></div>}
+            {aiProvider === 'anthropic' && <div><label className="label">Anthropic API Key {aiKeysConfigured.anthropic_api_key_set && !aiKeys.anthropic && <span className="text-green-400 text-xs ml-2">✓ configured</span>}</label><input className="input max-w-lg" type="password" placeholder={aiKeysConfigured.anthropic_api_key_set ? 'Leave blank to keep existing key' : 'sk-ant-api03-...'} value={aiKeys.anthropic} onChange={e => setAiKeys({ ...aiKeys, anthropic: e.target.value })} /></div>}
             {aiProvider === 'openai' && <div><label className="label">OpenAI API Key</label><input className="input max-w-lg" type="password" placeholder="sk-proj-..." value={aiKeys.openai} onChange={e => setAiKeys({ ...aiKeys, openai: e.target.value })} /></div>}
             {aiProvider === 'bedrock' && <div className="space-y-3"><div><label className="label">AWS Access Key ID</label><input className="input max-w-lg" type="password" placeholder="AKIA..." value={aiKeys.bedrock_key} onChange={e => setAiKeys({ ...aiKeys, bedrock_key: e.target.value })} /></div><div><label className="label">AWS Secret Access Key</label><input className="input max-w-lg" type="password" value={aiKeys.bedrock_secret} onChange={e => setAiKeys({ ...aiKeys, bedrock_secret: e.target.value })} /></div><div><label className="label">Region</label><input className="input max-w-xs" placeholder="us-east-1" value={aiKeys.bedrock_region} onChange={e => setAiKeys({ ...aiKeys, bedrock_region: e.target.value })} /></div></div>}
             {aiProvider === 'azure' && <div className="space-y-3"><div><label className="label">Azure Endpoint</label><input className="input max-w-lg" placeholder="https://your-resource.openai.azure.com" value={aiKeys.azure_endpoint} onChange={e => setAiKeys({ ...aiKeys, azure_endpoint: e.target.value })} /></div><div><label className="label">Azure Key</label><input className="input max-w-lg" type="password" value={aiKeys.azure_key} onChange={e => setAiKeys({ ...aiKeys, azure_key: e.target.value })} /></div></div>}

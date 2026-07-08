@@ -1,0 +1,109 @@
+{
+  "name": "omniguard",
+  "displayName": "OmniGuard Security",
+  "description": "AI-powered application security scanner — inline diagnostics, secret detection, SAST, and AI remediation",
+  "version": "1.0.0",
+  "publisher": "omniguard",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/omniguard"
+  },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Linters", "Other"],
+  "keywords": ["security", "secrets", "sast", "appsec", "omniguard"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "omniguard", "title": "OmniGuard Security", "icon": "$(shield)" }
+      ]
+    },
+    "views": {
+      "omniguard": [
+        { "id": "omniguardFindings", "name": "Security Findings" }
+      ]
+    },
+    "commands": [
+      { "command": "omniguard.scanFile",          "title": "OmniGuard: Scan Current File" },
+      { "command": "omniguard.scanWorkspace",     "title": "OmniGuard: Scan Workspace" },
+      { "command": "omniguard.configure",         "title": "OmniGuard: Configure" },
+      { "command": "omniguard.clearDiagnostics",  "title": "OmniGuard: Clear Diagnostics" },
+      { "command": "omniguard.showFindings",      "title": "OmniGuard: Show Findings Panel" }
+    ],
+    "configuration": {
+      "title": "OmniGuard",
+      "properties": {
+        "omniguard.supabaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Supabase project Functions URL (e.g. https://xyz.supabase.co/functions/v1)"
+        },
+        "omniguard.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OmniGuard API key from Dashboard → Settings → API Keys"
+        },
+        "omniguard.enableOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan files automatically on save"
+        },
+        "omniguard.enableOnType": {
+          "type": "boolean",
+          "default": false,
+          "description": "Scan files while typing (debounced, may be slow)"
+        },
+        "omniguard.failOnSeverity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"],
+          "default": "high",
+          "description": "Minimum severity to show as an error (vs warning)"
+        },
+        "omniguard.scanDelay": {
+          "type": "number",
+          "default": 1000,
+          "description": "Debounce delay in ms for on-type scanning"
+        },
+        "omniguard.excludePatterns": {
+          "type": "array",
+          "default": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**"],
+          "description": "Glob patterns to exclude from scanning"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "omniguard.scanFile",
+          "group": "omniguard",
+          "when": "editorTextFocus"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "omniguard.scanWorkspace",
+          "group": "omniguard"
+        }
+      ]
+    },
+    "statusBar": []
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package --no-yarn",
+    "publish-ext": "vsce publish --no-yarn"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}

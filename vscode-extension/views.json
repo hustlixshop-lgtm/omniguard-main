@@ -1,0 +1,21 @@
+{
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "omniguard",
+          "title": "OmniGuard",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "omniguard": [
+        {
+          "id": "omniguardFindings",
+          "name": "Security Findings"
+        }
+      ]
+    }
+  }
+}

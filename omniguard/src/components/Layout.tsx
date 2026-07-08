@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'
+import { NavLink, Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useNotifications } from '../hooks/useRepositories'
 import { Shield, LayoutDashboard, GitBranch, TriangleAlert, Play, ClipboardList, ShieldCheck, Users, FileText, Settings, LogOut, Bell, X, ChevronDown, ChevronRight, Search, Building2, Projector as Projects, Server, Lock, Key, Globe, Activity, ChartBar as BarChart3, Cloud, Code, Package, Layers, Brain, BookOpen, CreditCard, UserCog, Puzzle, Zap, ExternalLink, Command, Menu, Moon, Sun, Circle as HelpCircle, Briefcase, Target, CircleAlert as AlertCircle, TrendingUp, BadgeCheck } from 'lucide-react'
@@ -230,7 +230,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const navigate = useNavigate()
 
-  const orgs = memberships.map(m => ({ id: m.organization_id, name: m.organization_id.slice(0, 8), role: m.role }))
+  const [orgNames, setOrgNames] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!memberships.length) return
+    import('../lib/supabase').then(({ supabase }) => {
+      const ids = memberships.map(m => m.organization_id)
+      supabase.from('organizations').select('id,name').in('id', ids)
+        .then(({ data }) => {
+          if (data) setOrgNames(Object.fromEntries(data.map(o => [o.id, o.name])))
+        })
+    })
+  }, [memberships])
+
+  const orgs = memberships.map(m => ({ id: m.organization_id, name: orgNames[m.organization_id] || m.organization_id.slice(0, 12) + '…', role: m.role }))
   const displayName = profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || profile.email : user?.email || ''
   const initials = displayName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || 'U'
 
@@ -294,7 +307,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-slate-500">Organization</div>
                   <div className="text-sm text-slate-200 truncate">
-                    {currentOrganizationId?.slice(0, 12)}...
+                    {currentOrganizationId ? (orgNames[currentOrganizationId] || currentOrganizationId.slice(0, 12) + '…') : 'Select org'}
                   </div>
                 </div>
                 <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${showOrgMenu ? 'rotate-180' : ''}`} />
@@ -414,24 +427,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             {/* Quick Links */}
             <div className="hidden md:flex items-center gap-1 mr-2">
-              <a
-                href="https://docs.omniguard.io"
-                target="_blank"
-                rel="noopener noreferrer"
+              <NavLink
+                to="/docs"
                 className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
                 title="Documentation"
               >
                 <BookOpen className="w-4 h-4" />
-              </a>
-              <a
-                href="https://github.com/omniguard/omniguard"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                title="GitHub"
-              >
-                <GitBranch className="w-4 h-4" />
-              </a>
+              </NavLink>
             </div>
 
             {/* Notifications */}
@@ -527,21 +529,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <span>OmniGuard v1.0.0</span>
             <span>·</span>
-            <a href="https://status.omniguard.io" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 hover:text-slate-400">
+            <NavLink to="/audit-logs" className="flex items-center gap-1 hover:text-slate-400">
               <Activity className="w-3 h-3" />
-              System Status
-            </a>
+              Audit Logs
+            </NavLink>
           </div>
           <div className="flex items-center gap-4">
-            <a href="https://docs.omniguard.io" target="_blank" rel="noopener noreferrer" className="hover:text-slate-400">
-              Docs
-            </a>
-            <a href="https://github.com/omniguard/omniguard" target="_blank" rel="noopener noreferrer" className="hover:text-slate-400">
-              GitHub
-            </a>
-            <a href="mailto:support@omniguard.io" className="hover:text-slate-400">
-              Support
-            </a>
+            <NavLink to="/settings" className="hover:text-slate-400">Settings</NavLink>
+            <a href="mailto:support@omniguard.io" className="hover:text-slate-400">Support</a>
           </div>
         </footer>
       </div>

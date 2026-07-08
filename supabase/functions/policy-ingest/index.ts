@@ -87,12 +87,24 @@ Deno.serve(async (req: Request) => {
     if (text.length < 50) return new Response(JSON.stringify({ error: "Could not extract text from document" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
 
     // Use AI to generate a title and summary
-    const summaryRes = await callAI(aiCfg, `You are reading a security document titled "${file.name}". Summarize it in one sentence and suggest a policy title. Return JSON: {"title":"...","summary":"..."}`, "fast", 200);
+    const summaryRes = await callAI(aiCfg, `You are reading a security document titled "${file.name}". Summarize it in one sentence and suggest a policy title. Return JSON: {"title":"...","summary":"..."}`, "fast", { maxTokens: 200 });
     let title = file.name.replace(/\.\w+$/, ""); let description = "";
     if (summaryRes) { try { const p = JSON.parse(summaryRes.text.match(/\{[^}]+\}/)?.[0] || "{}"); title = p.title || title; description = p.summary || "" } catch { /* ok */ } }
 
-    // Create policy record
-    const { data: policy, error: pErr } = await supa.from("policies").insert({ organization_id: orgId, created_by: auth.userId || null, title, description, content: text.slice(0, 50000), severity: "high", status: "draft", source_type: file.name.split(".").pop() || "document" }).select().single();
+    // Create policy record — using actual schema columns
+    const { data: policy, error: pErr } = await supa.from("policies").insert({
+      organization_id: orgId,
+      created_by: auth.userId || null,
+      name: title,
+      description,
+      content: text.slice(0, 50000),
+      policy_type: "json",
+      category: "governance",
+      severity: "high",
+      enabled: true,
+      enforcement_mode: "audit",
+      tags: [file.name.split(".").pop() || "document", "ingested"],
+    }).select().single();
     if (pErr) return new Response(JSON.stringify({ error: pErr.message }), { status: 500, headers: { ...cors, "Content-Type": "application/json" } });
 
     // Generate and store chunks + embeddings

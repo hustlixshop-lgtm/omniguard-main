@@ -84,7 +84,7 @@ Deno.serve(async (req: Request) => {
     if (req.method === "POST" && suppMatch) {
       const body = await req.json();
       if (!body.reason?.trim()) return json({ success: false, error: { code: "BAD_REQUEST", message: "reason required" } }, 400);
-      const { data, error } = await supa.from("findings").update({ status: "suppressed", suppression_note: body.reason, resolved_by: auth.userId || null, resolved_at: new Date().toISOString() }).eq("id", suppMatch[1]).eq("organization_id", orgId).select().single();
+      const { data, error } = await supa.from("findings").update({ status: "suppressed", suppress_reason: body.reason, suppressed_by: auth.userId || null, suppressed_at: new Date().toISOString() }).eq("id", suppMatch[1]).eq("organization_id", orgId).select().single();
       if (error) throw error;
       if (!data) return json({ success: false, error: { code: "NOT_FOUND" } }, 404);
       await supa.from("audit_logs").insert({ organization_id: orgId, user_id: auth.userId || null, action: "finding_suppressed", resource_type: "finding", resource_id: suppMatch[1], metadata: { reason: body.reason } });

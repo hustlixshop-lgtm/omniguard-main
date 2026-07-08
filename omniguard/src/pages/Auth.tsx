@@ -21,19 +21,18 @@ export function Auth() {
     } else {
       if (!form.firstName.trim()) { setError('First name required'); setLoading(false); return }
       const { error: err } = await signUp(form.email, form.password, form.firstName, form.lastName)
-      if (err) setError(err)
-      else {
-        // After signup, create org and membership
-        const slug = form.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now().toString(36)
-        const { data: org } = await supabase.from('organizations').insert({ name: `${form.firstName}'s Organization`, slug }).select().single()
-        if (org) {
-          const { data: { user } } = await supabase.auth.getUser()
-          if (user) await supabase.from('organization_members').insert({ organization_id: org.id, user_id: user.id, role: 'owner', status: 'active' })
-        }
-        setSuccess('Account created! Signing you in...')
-        const { error: si } = await signIn(form.email, form.password)
-        if (si) { setError(si); setSuccess('') }
+      if (err) { setError(err); setLoading(false); return }
+      // After signup, create org and membership
+      const slug = form.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now().toString(36)
+      const { data: org } = await supabase.from('organizations').insert({ name: `${form.firstName}'s Organization`, slug }).select().single()
+      if (org) {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) await supabase.from('organization_members').insert({ organization_id: org.id, user_id: user.id, role: 'owner', status: 'active' })
       }
+      setSuccess('Account created! Signing you in...')
+      const { error: si } = await signIn(form.email, form.password)
+      if (si) { setError(si); setSuccess('') }
+      setLoading(false)
     }
     setLoading(false)
   }

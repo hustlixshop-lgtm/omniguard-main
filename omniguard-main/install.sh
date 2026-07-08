@@ -1,136 +1,170 @@
 #!/bin/bash
 # OmniGuard Installation Script
-# This script installs OmniGuard, sets up hooks, and configures your environment
+# Builds the CLI from source and installs it locally.
+# No fake npm packages. No fake URLs. No fake Marketplace extensions.
 
 set -e
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${BLUE}"
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║              OmniGuard Security Platform                   ║"
-echo "║                    Installation Script                     ║"
-echo "╚════════════════════════════════════════════════════════════╝"
-echo -e "${NC}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLI_DIR="$REPO_ROOT/cli"
 
-# Check dependencies
-echo -e "${BLUE}Checking dependencies...${NC}"
+banner() {
+  echo -e "${BLUE}"
+  echo "╔════════════════════════════════════════════════════════════╗"
+  echo "║              OmniGuard Security Platform v1                ║"
+  echo "║                    Installation Script                     ║"
+  echo "╚════════════════════════════════════════════════════════════╝"
+  echo -e "${NC}"
+}
 
-has_node=$(command -v node || echo "")
-if [ -z "$has_node" ]; then
-    echo -e "${RED}Error: Node.js is required but not installed.${NC}"
-    echo "Please install Node.js from https://nodejs.org/"
-    exit 1
+step() { echo -e "${BLUE}▶ $*${NC}"; }
+ok()   { echo -e "${GREEN}✓ $*${NC}"; }
+warn() { echo -e "${YELLOW}⚠ $*${NC}"; }
+fail() { echo -e "${RED}✗ $*${NC}"; exit 1; }
+
+banner
+
+# ─── Check dependencies ───────────────────────────────────────────────────────
+
+step "Checking dependencies..."
+
+command -v node >/dev/null 2>&1 || fail "Node.js is required. Install from https://nodejs.org/"
+NODE_MAJOR=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
+[ "$NODE_MAJOR" -ge 18 ] || fail "Node.js >=18 required. Found: $(node --version)"
+ok "Node.js $(node --version)"
+
+command -v npm >/dev/null 2>&1 || fail "npm is required. Install from https://nodejs.org/"
+ok "npm $(npm --version)"
+
+command -v git >/dev/null 2>&1 && ok "git $(git --version | head -1)" || warn "git not found — hook installation will be skipped"
+
+# ─── Build & install CLI ─────────────────────────────────────────────────────
+
+step "Installing OmniGuard CLI..."
+
+if [ ! -d "$CLI_DIR" ]; then
+  fail "CLI directory not found at $CLI_DIR"
 fi
 
-has_git=$(command -v git || echo "")
-if [ -z "$has_git" ]; then
-    echo -e "${RED}Error: Git is required but not installed.${NC}"
-    echo "Please install Git from https://git-scm.com/"
-    exit 1
+if [ ! -f "$CLI_DIR/src/index.js" ]; then
+  fail "CLI source not found at $CLI_DIR/src/index.js"
 fi
 
-has_curl=$(command -v curl || echo "")
-if [ -z "$has_curl" ]; then
-    echo -e "${YELLOW}Warning: curl not found. Some features may be limited.${NC}"
-fi
+# Ensure the CLI is executable
+chmod +x "$CLI_DIR/src/index.js"
 
-echo -e "${GREEN}✓ Dependencies OK${NC}"
+# Use npm link to install CLI globally from local source (no npm publish required)
+cd "$CLI_DIR"
+npm link 2>&1 | grep -v "^npm warn" || true
+cd - >/dev/null
 
-# Detect package manager
-PKG_MANAGER=""
-if command -v pnpm &> /dev/null; then
-    PKG_MANAGER="pnpm"
-elif command -v yarn &> /dev/null; then
-    PKG_MANAGER="yarn"
-elif command -v npm &> /dev/null; then
-    PKG_MANAGER="npm"
-fi
-
-echo -e "${BLUE}Package manager: $PKG_MANAGER${NC}"
-
-# Install OmniGuard CLI
-echo -e "${BLUE}Installing OmniGuard CLI...${NC}"
-
-if [ "$PKG_MANAGER" = "pnpm" ]; then
-    pnpm add -g @omniguard/cli
-elif [ "$PKG_MANAGER" = "yarn" ]; then
-    yarn global add @omniguard/cli
-elif [ "$PKG_MANAGER" = "npm" ]; then
-    npm install -g @omniguard/cli
-fi
-
-echo -e "${GREEN}✓ OmniGuard CLI installed${NC}"
-
-# Check if in a git repository
-if [ -d ".git" ]; then
-    echo -e "${BLUE}Git repository detected. Installing hooks...${NC}"
-
-    # Create hooks directory
-    mkdir -p .git/hooks
-
-    # Download and install pre-commit hook
-    curl -fsSL https://raw.githubusercontent.com/omniguard/omniguard/main/hooks/pre-commit -o .git/hooks/pre-commit
-    chmod +x .git/hooks/pre-commit
-
-    # Download and install pre-push hook
-    curl -fsSL https://raw.githubusercontent.com/omniguard/omniguard/main/hooks/pre-push -o .git/hooks/pre-push
-    chmod +x .git/hooks/pre-push
-
-    echo -e "${GREEN}✓ Git hooks installed${NC}"
+# Verify installation
+if command -v omniguard >/dev/null 2>&1; then
+  ok "omniguard CLI installed ($(omniguard version))"
 else
-    echo -e "${YELLOW}Not in a git repository. Skipping hook installation.${NC}"
-    echo -e "Run 'omniguard install-hooks' inside a git repository to set up hooks."
+  # Fallback: add to PATH manually using a wrapper
+  warn "npm link didn't put omniguard in PATH. Adding wrapper..."
+  if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+    cat > /usr/local/bin/omniguard << WRAPPER
+#!/bin/sh
+node "$CLI_DIR/src/index.js" "\$@"
+WRAPPER
+    chmod +x /usr/local/bin/omniguard
+    ok "omniguard CLI wrapper installed at /usr/local/bin/omniguard"
+  elif [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin"; then
+    cat > "$HOME/.local/bin/omniguard" << WRAPPER
+#!/bin/sh
+node "$CLI_DIR/src/index.js" "\$@"
+WRAPPER
+    chmod +x "$HOME/.local/bin/omniguard"
+    ok "omniguard CLI wrapper installed at $HOME/.local/bin/omniguard"
+    echo ""
+    warn "Add $HOME/.local/bin to your PATH:"
+    echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
+  fi
 fi
 
-# Configuration
+# ─── Install git hooks (if in a git repo) ────────────────────────────────────
+
+if [ -d ".git" ]; then
+  step "Installing git hooks in current repository..."
+  mkdir -p .git/hooks
+  omniguard install-hooks && ok "Git hooks installed" || warn "Hook installation failed (non-fatal)"
+else
+  warn "Not in a git repository. Skipping hook installation."
+  echo "  Run 'omniguard install-hooks' inside any git repository."
+fi
+
+# ─── VS Code Extension (build from source if present) ────────────────────────
+
+VSCE_DIR=""
+for candidate in "$REPO_ROOT/vscode-extension" "$REPO_ROOT/omniguard-main/vscode-extension"; do
+  [ -d "$candidate" ] && VSCE_DIR="$candidate" && break
+done
+
+if [ -n "$VSCE_DIR" ] && [ -f "$VSCE_DIR/package.json" ]; then
+  step "Building VS Code extension..."
+  cd "$VSCE_DIR"
+  npm install --silent
+  if command -v vsce >/dev/null 2>&1 || npx vsce --version >/dev/null 2>&1; then
+    npm run compile 2>&1 | tail -5 || true
+    npx vsce package --no-yarn 2>&1 | tail -5 || true
+    VSIX=$(ls *.vsix 2>/dev/null | head -1)
+    if [ -n "$VSIX" ] && command -v code >/dev/null 2>&1; then
+      code --install-extension "$VSIX" --force 2>&1 | tail -3 || true
+      ok "VS Code extension installed from $VSIX"
+    elif [ -n "$VSIX" ]; then
+      ok "VS Code extension built: $VSIX"
+      warn "Install manually: code --install-extension $VSCE_DIR/$VSIX"
+    fi
+  else
+    warn "vsce not available. Install with: npm install -g @vscode/vsce"
+  fi
+  cd - >/dev/null
+else
+  warn "VS Code extension not found — skipping"
+fi
+
+# ─── Configuration guidance ──────────────────────────────────────────────────
+
 echo ""
 echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Configuration${NC}"
 echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"
-
-# API Key
-if [ -z "$OMNIGUARD_API_KEY" ]; then
-    echo ""
-    echo -e "${YELLOW}To enable full functionality, set your environment variables:${NC}"
-    echo ""
-    echo "  export OMNIGUARD_URL=\"https://api.omniguard.io\""
-    echo "  export OMNIGUARD_API_KEY=\"your-api-key-here\""
-    echo ""
-    echo -e "${YELLOW}Get your API key at:${NC} https://app.omniguard.io/settings/api-keys"
-    echo ""
-fi
-
-# VS Code Extension
-echo -e "${BLUE}Installing VS Code extension...${NC}"
-if command -v code &> /dev/null; then
-    code --install-extension omniguard.omniguard --force 2>/dev/null || echo -e "${YELLOW}VS Code extension available at: https://marketplace.visualstudio.com/items?itemName=omniguard.omniguard${NC}"
-else
-    echo -e "${YELLOW}VS Code not found. Install extension manually from:${NC}"
-    echo "https://marketplace.visualstudio.com/items?itemName=omniguard.omniguard"
-fi
-
-# Final message
 echo ""
+echo "  Connect OmniGuard to your Supabase project:"
+echo ""
+echo "    omniguard login"
+echo ""
+echo "  Or set environment variables:"
+echo ""
+echo "    export OMNIGUARD_URL=\"https://<project>.supabase.co/functions/v1\""
+echo "    export OMNIGUARD_API_KEY=\"og_live_...\"  # from Dashboard → Settings → API Keys"
+echo ""
+echo "  Get your Supabase project URL from: https://supabase.com/dashboard"
+echo ""
+
+# ─── Quick start ─────────────────────────────────────────────────────────────
+
 echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║            OmniGuard installation complete!                ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${BLUE}Quick Start:${NC}"
 echo ""
-echo "  omniguard scan                  # Scan current directory"
-echo "  omniguard status                # Check security status"
-echo "  omniguard install-hooks         # Install Git hooks"
-echo "  omniguard help                  # Show all commands"
+echo "  omniguard version          # Verify installation"
+echo "  omniguard doctor           # Check your setup"
+echo "  omniguard login            # Authenticate with dashboard"
+echo "  omniguard scan .           # Scan current directory"
+echo "  omniguard install-hooks    # Install git hooks in current repo"
+echo "  omniguard help             # Show all commands"
 echo ""
-echo -e "${BLUE}VS Code:${NC}"
-echo "  Open a file and press Cmd+Shift+P → OmniGuard: Scan Current File"
-echo ""
-echo -e "${BLUE}Documentation:${NC} https://docs.omniguard.io"
-echo -e "${BLUE}Support:${NC} https://github.com/omniguard/omniguard/issues"
+echo -e "${BLUE}Documentation:${NC} ./docs/ directory in this repository"
 echo ""

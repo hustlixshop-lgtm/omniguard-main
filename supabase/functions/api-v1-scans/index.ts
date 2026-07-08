@@ -39,8 +39,8 @@ Deno.serve(async (req: Request) => {
       const body = await req.json();
       if (!body.repository) return json({ success: false, error: "repository required" }, 400);
       const isUuid = /^[0-9a-f-]{36}$/i.test(body.repository);
-      const { data: repo } = await supa.from("repositories").select("id, organization_id, name, full_name, default_branch")
-        .eq("organization_id", orgId).is("deleted_at", null)[isUuid ? "eq" : "eq"](isUuid ? "id" : "full_name", body.repository).maybeSingle();
+      const repoQ = supa.from("repositories").select("id, organization_id, name, full_name, default_branch").eq("organization_id", orgId).is("deleted_at", null);
+      const { data: repo } = await (isUuid ? repoQ.eq("id", body.repository) : repoQ.eq("full_name", body.repository)).maybeSingle();
       if (!repo) return json({ success: false, error: "Repository not found" }, 404);
       const { data: scan, error } = await supa.from("scans").insert({ repository_id: repo.id, organization_id: orgId, status: "queued", trigger: body.trigger || "api", branch: body.branch || repo.default_branch, commit_sha: body.commit || null, created_by: a.userId || null }).select().single();
       if (error) throw error;

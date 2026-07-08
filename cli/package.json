@@ -1,0 +1,19 @@
+{
+  "name": "omniguard",
+  "version": "1.0.0",
+  "description": "OmniGuard - AI-Powered Application Security Platform CLI",
+  "main": "src/index.js",
+  "bin": {
+    "omniguard": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["security", "appsec", "secrets", "sast", "devsecops"],
+  "license": "MIT",
+  "files": ["src/"],
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node src/index.js version"
+  }
+}

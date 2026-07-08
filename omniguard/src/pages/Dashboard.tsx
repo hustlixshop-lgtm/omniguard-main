@@ -1,9 +1,9 @@
 import { useAuth } from '../hooks/useAuth'
 import { useDashboardStats, useAllScans } from '../hooks/useRepositories'
 import { supabase } from '../lib/supabase'
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Shield, ShieldAlert, ShieldCheck, ShieldX, TriangleAlert, CircleCheck, CircleX, CircleAlert as AlertCircle, TrendingUp, TrendingDown, Minus, GitBranch, Play, Clock, Activity, Zap, Target, FileCode, Globe, Server, Lock, Key, Bug, ArrowRight, ExternalLink, ChevronRight, ChevronDown, ChartBar as BarChart3, ChartPie as PieChart, ChartLine as LineChart, Sparkles, Calendar, RefreshCw, ListFilter as Filter, MoveHorizontal as MoreHorizontal, Cloud, Code, Database, Layers, Package } from 'lucide-react'
+import { Shield, ShieldAlert, ShieldCheck, ShieldX, TriangleAlert, CircleCheck, CircleX, CircleAlert as AlertCircle, TrendingUp, TrendingDown, Minus, GitBranch, Play, Clock, Activity, Zap, Target, FileCode, Globe, Server, Lock, Key, Bug, ArrowRight, ExternalLink, ChevronRight, ChevronDown, ChartBar as BarChart3, ChartPie as PieChart, ChartLine as LineChart, Sparkles, Calendar, RefreshCw, ListFilter as Filter, MoveHorizontal as MoreHorizontal, Cloud, Code, Database, Layers, Package, Box } from 'lucide-react'
 
 interface SecurityPosture {
   score: number
@@ -48,11 +48,10 @@ export function Dashboard() {
 
   const recent = scans.slice(0, 5)
 
-  // Calculate security posture score
-  useEffect(() => {
+  const fetchDashboardData = useCallback(async () => {
     if (!currentOrganizationId) return
+    {
 
-    async function fetchDashboardData() {
       // Get findings for posture calculation
       const { data: findings } = await supabase
         .from('findings')
@@ -124,7 +123,14 @@ export function Dashboard() {
         active_threats: openCritical + (findings?.filter(f => f.severity === 'high' && !['resolved', 'suppressed'].includes(f.status)).length || 0),
         mitigated_24h: resolved24h,
         pending_triage: recentOpen,
-        mean_time_to_resolve: 4.2, // Hours - placeholder, could calculate from resolved_at - created_at
+        mean_time_to_resolve: findings
+          ? (() => {
+              const resolved = findings.filter(f => f.status === 'resolved' && f.resolved_at)
+              if (!resolved.length) return 0
+              const hrs = resolved.map(f => (new Date(f.resolved_at!).getTime() - new Date(f.created_at).getTime()) / 3600000)
+              return Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length * 10) / 10
+            })()
+          : 0,
       })
 
       // Get top risks (highest risk score findings)
@@ -164,13 +170,14 @@ export function Dashboard() {
       }
     }
 
-    fetchDashboardData()
   }, [currentOrganizationId])
+
+  useEffect(() => { fetchDashboardData() }, [fetchDashboardData])
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    // Re-fetch all data
-    setTimeout(() => setRefreshing(false), 1000)
+    await fetchDashboardData()
+    setRefreshing(false)
   }
 
   const gradeColors: Record<string, { bg: string; text: string; ring: string }> = {
@@ -591,7 +598,7 @@ export function Dashboard() {
             { icon: Bug, label: 'SAST', desc: 'Code analysis', color: 'text-orange-400' },
             { icon: Package, label: 'Dependencies', desc: 'Vulnerabilities', color: 'text-blue-400' },
             { icon: Server, label: 'IaC', desc: 'Misconfigurations', color: 'text-purple-400' },
-            { icon: Container, label: 'Container', desc: 'Image scans', color: 'text-cyan-400' },
+            { icon: Box, label: 'Container', desc: 'Image scans', color: 'text-cyan-400' },
             { icon: FileCode, label: 'License', desc: 'Compliance', color: 'text-green-400' },
           ].map(({ icon: Icon, label, desc, color }) => (
             <div key={label} className="p-4 bg-slate-800/30 rounded-lg hover:bg-slate-800/50 transition-colors cursor-pointer">

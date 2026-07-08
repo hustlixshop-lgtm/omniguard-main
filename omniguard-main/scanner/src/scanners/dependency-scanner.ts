@@ -281,23 +281,14 @@ export class DependencyScanner extends BaseScanner {
     const cleanVer = semver.coerce(version);
     if (!cleanVer) return false;
 
-    // Check if version is in vulnerable range
-    if (vulnerableRange && vulnerableRange !== '*') {
-      if (semver.satisfies(cleanVer, vulnerableRange)) {
-        return true;
-      }
-    }
+    // Must be in the vulnerable range to be vulnerable
+    if (!vulnerableRange || vulnerableRange === '*') return false;
+    if (!semver.satisfies(cleanVer, vulnerableRange)) return false;
 
-    // Check if version is patched
-    if (patchedRange) {
-      if (semver.satisfies(cleanVer, patchedRange)) {
-        return false;
-      }
-      // If not patched and meets the criteria, it's vulnerable
-      return true;
-    }
+    // If in vulnerable range, check if already patched
+    if (patchedRange && semver.satisfies(cleanVer, patchedRange)) return false;
 
-    return false;
+    return true;
   }
 
   private createFinding(dep: Dependency, vuln: VulnerabilityInfo, filePath: string): Finding {

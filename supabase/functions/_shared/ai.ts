@@ -56,7 +56,7 @@ export type Tier = "fast" | "medium" | "deep";
 // ── Model registry ────────────────────────────────────────────
 
 export const MODELS: Record<string, Record<Tier, string>> = {
-  anthropic:  { fast: "claude-3-5-haiku-20241022",           medium: "claude-3-5-sonnet-20241022",          deep: "claude-opus-4-5"                           },
+  anthropic:  { fast: "claude-3-5-haiku-20241022",           medium: "claude-3-5-sonnet-20241022",          deep: "claude-3-5-sonnet-20241022"                },
   openai:     { fast: "gpt-4o-mini",                         medium: "gpt-4o",                              deep: "gpt-4o"                                    },
   bedrock:    { fast: "anthropic.claude-3-5-haiku-20241022-v1:0", medium: "anthropic.claude-3-5-sonnet-20241022-v2:0", deep: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
   azure:      { fast: "gpt-4o-mini",                         medium: "gpt-4o",                              deep: "gpt-4o"                                    },
@@ -119,8 +119,11 @@ function getSupa() {
 async function cacheGet(cacheKey: string): Promise<string | null> {
   const supa = getSupa(); if (!supa) return null;
   try {
-    const { data } = await supa.from("ai_cache").select("response_text").eq("cache_key", cacheKey).gt("expires_at", new Date().toISOString()).maybeSingle();
-    if (data) { await supa.from("ai_cache").update({ hit_count: supa.rpc("increment_hit", {}) }).eq("cache_key", cacheKey).catch(() => {}); return data.response_text; }
+    const { data } = await supa.from("ai_cache").select("response_text, hit_count").eq("cache_key", cacheKey).gt("expires_at", new Date().toISOString()).maybeSingle();
+    if (data) {
+      supa.from("ai_cache").update({ hit_count: ((data.hit_count as number) ?? 0) + 1 }).eq("cache_key", cacheKey).catch(() => {});
+      return data.response_text;
+    }
   } catch { /* non-fatal */ }
   return null;
 }
@@ -165,10 +168,10 @@ async function callOpenAI(key: string, model: string, prompt: string, maxTokens:
   return { text: d.choices?.[0]?.message?.content ?? "", promptTokens: d.usage?.prompt_tokens ?? 0, completionTokens: d.usage?.completion_tokens ?? 0 };
 }
 
-async function callGemini(key: string, model: string, prompt: string): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
+async function callGemini(key: string, model: string, prompt: string, maxTokens: number): Promise<{ text: string; promptTokens: number; completionTokens: number }> {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 1024 } }),
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens } }),
     signal: AbortSignal.timeout(45_000),
   });
   if (!r.ok) { const e = await r.text(); throw new Error(`Gemini ${r.status}: ${e.slice(0, 200)}`); }
@@ -260,7 +263,7 @@ async function dispatchWithRetry(
         case "openai":     return await callOpenAI(cfg.openai_api_key!,        model, prompt, maxTokens);
         case "bedrock":    return await callBedrock(cfg,                        model, prompt, maxTokens);
         case "azure":      return await callAzure(cfg,                          model, prompt, maxTokens);
-        case "gemini":     return await callGemini(cfg.gemini_api_key!,        model, prompt);
+        case "gemini":     return await callGemini(cfg.gemini_api_key!,        model, prompt, maxTokens);
         case "openrouter": return await callOpenRouter(cfg.openrouter_api_key!, model, prompt, maxTokens);
         case "ollama":     return await callOllama(cfg.ollama_url ?? "http://localhost:11434", model, prompt);
         default: throw new Error(`Unknown provider: ${cfg.provider}`);
@@ -407,7 +410,7 @@ export function resolveAIConfig(orgConfig: Record<string, unknown>): AIConfig {
   const envCfg = getEnvAIConfig();
   const orgCfg = getAIConfig(orgConfig);
   // If org has a provider key configured, use it entirely
-  if (orgCfg.provider !== "none") return { ...orgCfg, fallback_provider: orgCfg.fallback_provider ?? envCfg.provider !== "none" ? envCfg.provider : undefined };
+  if (orgCfg.provider !== "none") return { ...orgCfg, fallback_provider: orgCfg.fallback_provider ?? (envCfg.provider !== "none" ? envCfg.provider : undefined) };
   // Fall back to platform env
   return envCfg;
 }
